@@ -2,19 +2,21 @@ import random
 import json
 import pickle
 import numpy as np
-
 import nltk
 from nltk.stem import WordNetLemmatizer
-
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Activation, Dropout
 from tensorflow.keras.optimizers import SGD
-
 import re
 from nltk.corpus import stopwords, wordnet
 from nltk.tokenize import word_tokenize
-import nltk
 import pandas as pd
+import torch
+import matplotlib.pyplot as plt
+import seaborn as sns
+from transformers import BertTokenizer, BertForQuestionAnswering, AdamW, get_linear_schedule_with_warmup
+from torch.utils.data import Dataset, DataLoader
+
 # Download necessary NLTK data
 nltk.download('stopwords')
 nltk.download('wordnet')
@@ -77,17 +79,11 @@ train_light_df.columns
 import torch
 print(torch.__version__)
 
-
-from transformers import BertTokenizer, BertForQuestionAnswering
-
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 model = BertForQuestionAnswering.from_pretrained('bert-base-uncased')
 
-
-from torch.utils.data import Dataset
-
 class QADataset(Dataset):
-    def __init__(self, questions,answers, tokenizer, max_len):
+    def __init__(self, questions, answers, tokenizer, max_len):
         self.questions = questions
         self.answers = answers
         self.tokenizer = tokenizer
@@ -95,39 +91,53 @@ class QADataset(Dataset):
 
     def __len__(self):
         return len(self.questions)
-    
-    def __getitem__(self,item):
+
+    def __getitem__(self, item):
         question = str(self.questions[item])
         answer = str(self.answers[item])
-    
-        encoding = self.tokenizer(
+
+        # Tokenize question and answer separately
+        question_encoding = self.tokenizer(
             question,
-            answer, 
-            add_special_tokens=True, 
-            max_length=self.max_len, 
-            return_token_type_ids=True,
-            truncation = 'only_first',
+            add_special_tokens=True,
+            max_length=self.max_len,
             padding='max_length',
-            return_attention_mask=True,
-            return_tensors='pt',
-            return_overflowing_tokens=True
+            truncation=True,
+            return_tensors='pt'
         )
 
-        start_pos = 0
-        end_pos = len(answer) - 1
+        answer_encoding = self.tokenizer(
+            answer,
+            add_special_tokens=False,
+            max_length=self.max_len,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt'
+        )
 
+        # Find the start and end positions of the answer in the tokenized question
+        question_tokens = self.tokenizer.convert_ids_to_tokens(question_encoding['input_ids'][0])
+        answer_tokens = self.tokenizer.convert_ids_to_tokens(answer_encoding['input_ids'][0])
 
-        input_ids = encoding['input_ids'].flatten()
-        attention_mask = encoding['attention_mask'].flatten()
-        token_type_ids = encoding['token_type_ids'].flatten()
+        start_pos, end_pos = 0, 0
+        for i in range(len(question_tokens) - len(answer_tokens) + 1):
+            if question_tokens[i:i+len(answer_tokens)] == answer_tokens:
+                start_pos = i
+                end_pos = i + len(answer_tokens) - 1
+                break
+
+        # Handle cases where the answer is not found
+        if start_pos == 0 and end_pos == 0:
+            start_pos, end_pos = 0, 0
 
         return {
-            'input_ids': encoding['input_ids'].flatten(),
-            'attention_mask': encoding['attention_mask'].flatten(),
-            'token_type_ids': encoding['token_type_ids'].flatten(),
+            'input_ids': question_encoding['input_ids'].flatten(),
+            'attention_mask': question_encoding['attention_mask'].flatten(),
+            'token_type_ids': question_encoding['token_type_ids'].flatten(),
             'start_positions': torch.tensor(start_pos, dtype=torch.long),
             'end_positions': torch.tensor(end_pos, dtype=torch.long)
         }
+
 
 questions = train_light_df['question'].to_list()
 answers = train_light_df['answer'].to_list()
